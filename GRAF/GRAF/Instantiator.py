@@ -6,7 +6,7 @@ import traceback
 from typing import Tuple, List, Dict, Set
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-antlr_path = os.path.join(current_dir, "antlr4-cypher", "antlr4_cypher")
+antlr_path = os.path.join(current_dir, "antlr4_cypher", "antlr4_cypher")
 if antlr_path not in sys.path:
     sys.path.insert(0, antlr_path)
 

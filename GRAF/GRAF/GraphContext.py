@@ -99,6 +99,137 @@ class MemgraphContextExtractor:
         if state.total_nodes > 0:
             state.avg_degree = (state.total_edges * 2) / state.total_nodes
 
+
+class Neo4jContextExtractor:
+    def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="testpassword", database="neo4j"):
+        self.database = database
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+
+    def close(self):
+        self.driver.close()
+
+    def extract_context(self) -> Tuple[SchemaMetadata, GlobalGraphState]:
+        schema, state = SchemaMetadata(), GlobalGraphState()
+        with self.driver.session(database=self.database) as session:
+            self._extract_metadata_M(session, schema)
+            self._extract_global_state_G(session, state)
+        return schema, state
+
+    def _extract_metadata_M(self, session, schema):
+        res_labels = session.run("MATCH (n) UNWIND labels(n) AS label RETURN DISTINCT label")
+        schema.labels = {record["label"] for record in res_labels if record["label"]}
+
+        res_topo = session.run("""
+            MATCH (a)-[r]->(b)
+            UNWIND labels(a) AS src_label
+            UNWIND labels(b) AS dst_label
+            RETURN DISTINCT src_label, type(r) AS rel_type, dst_label
+            LIMIT 10000
+        """)
+        for record in res_topo:
+            rel_type = record["rel_type"]
+            if not rel_type:
+                continue
+            schema.topology.setdefault(rel_type, set()).add((record["src_label"], record["dst_label"]))
+
+        self._extract_node_properties(session, schema)
+        self._extract_relationship_properties(session, schema)
+
+    def _extract_node_properties(self, session, schema):
+        for label in schema.labels:
+            schema.properties.setdefault(label, {})
+
+        try:
+            result = session.run("""
+                CALL db.schema.nodeTypeProperties()
+                YIELD nodeLabels, propertyName, propertyTypes
+                RETURN nodeLabels, propertyName, propertyTypes
+            """)
+            for record in result:
+                prop_name = record["propertyName"]
+                prop_types = record["propertyTypes"] or []
+                if not prop_name:
+                    continue
+                mapped_type = self._map_neo4j_type(prop_types[0] if prop_types else "STRING")
+                for label in record["nodeLabels"] or []:
+                    clean_label = str(label).strip(":`")
+                    if clean_label in schema.labels:
+                        schema.properties.setdefault(clean_label, {})[prop_name] = mapped_type
+            return
+        except Exception:
+            pass
+
+        for label in schema.labels:
+            result = session.run(f"MATCH (n:`{label}`) RETURN n LIMIT 100")
+            for record in result:
+                node = record["n"]
+                if not node:
+                    continue
+                for key, value in dict(node).items():
+                    schema.properties.setdefault(label, {}).setdefault(key, self._map_value_type(value))
+
+    def _extract_relationship_properties(self, session, schema):
+        for rel_type in schema.topology.keys():
+            schema.properties.setdefault(rel_type, {})
+
+        try:
+            result = session.run("""
+                CALL db.schema.relTypeProperties()
+                YIELD relType, propertyName, propertyTypes
+                RETURN relType, propertyName, propertyTypes
+            """)
+            for record in result:
+                rel_type = str(record["relType"]).strip(":`")
+                prop_name = record["propertyName"]
+                prop_types = record["propertyTypes"] or []
+                if rel_type in schema.topology and prop_name:
+                    schema.properties.setdefault(rel_type, {})[prop_name] = self._map_neo4j_type(prop_types[0] if prop_types else "STRING")
+            return
+        except Exception:
+            pass
+
+        for rel_type in schema.topology.keys():
+            result = session.run(f"MATCH ()-[r:`{rel_type}`]->() RETURN r LIMIT 100")
+            for record in result:
+                rel = record["r"]
+                if not rel:
+                    continue
+                for key, value in dict(rel).items():
+                    schema.properties.setdefault(rel_type, {}).setdefault(key, self._map_value_type(value))
+
+    def _map_neo4j_type(self, neo4j_type: str) -> str:
+        t = str(neo4j_type).upper()
+        if "BOOLEAN" in t:
+            return "BOOLEAN"
+        if "INTEGER" in t or "LONG" in t:
+            return "INTEGER"
+        if "FLOAT" in t or "DOUBLE" in t:
+            return "FLOAT"
+        if "LIST" in t:
+            return "LIST"
+        if "MAP" in t:
+            return "MAP"
+        return "STRING"
+
+    def _map_value_type(self, value) -> str:
+        if isinstance(value, bool):
+            return "BOOLEAN"
+        if isinstance(value, int):
+            return "INTEGER"
+        if isinstance(value, float):
+            return "FLOAT"
+        if isinstance(value, list):
+            return "LIST"
+        if isinstance(value, dict):
+            return "MAP"
+        return "STRING"
+
+    def _extract_global_state_G(self, session, state):
+        state.total_nodes = session.run("MATCH (n) RETURN count(n) AS total_nodes").single()["total_nodes"]
+        state.total_edges = session.run("MATCH ()-[r]->() RETURN count(r) AS total_edges").single()["total_edges"]
+        if state.total_nodes > 0:
+            state.avg_degree = (state.total_edges * 2) / state.total_nodes
+
 class FalkorDBContextExtractor:
     def __init__(self, host="localhost", port=6379, password="", graph_name="graf_fuzz"):
         self.db = FalkorDB(host=host, port=port, password=password)
@@ -321,4 +452,3 @@ class NebulaContextExtractor:
             
         if state.total_nodes > 0:
             state.avg_degree = (state.total_edges * 2) / state.total_nodes
-

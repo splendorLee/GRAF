@@ -34,20 +34,158 @@ except ImportError:
 # 1. Memgraph 种子图构造器
 # ========================================================================================
 class MemgraphSeedGenerator:
-    def __init__(self, uri: str, user: str = "", password: str = ""):
+    def __init__(
+        self,
+        uri: str,
+        user: str = "",
+        password: str = "",
+        ready_timeout_s: int = 60,
+        delete_batch_size: int = 1000,
+        delete_max_batches: int = 1000,
+    ):
+        self.uri = uri
+        self.auth = (user, password)
+        self.ready_timeout_s = ready_timeout_s
+        self.delete_batch_size = delete_batch_size
+        self.delete_max_batches = delete_max_batches
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.seed_cypher = SHARED_SEED_CYPHER
 
     def close(self):
         self.driver.close()
 
-    def reset_and_initialize(self):
+    def _wait_until_ready(self):
+        deadline = time.time() + self.ready_timeout_s
+        last_error = None
+        while time.time() < deadline:
+            try:
+                self.driver.verify_connectivity()
+                with self.driver.session() as session:
+                    session.run("RETURN 1 AS ok").consume()
+                return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(2)
+
+        raise RuntimeError(
+            f"Memgraph did not become ready within {self.ready_timeout_s}s: {last_error}. "
+            "请先确认 memgraph_fuzz_target 容器正在运行，并且宿主机 7687 已映射到容器 7687。"
+        )
+
+    def _clear_database(self, session):
+        total_deleted = 0
+        for _ in range(self.delete_max_batches):
+            record = session.run(
+                "MATCH (n) WITH n LIMIT $batch_size DETACH DELETE n RETURN count(n) AS deleted",
+                batch_size=self.delete_batch_size,
+            ).single()
+            deleted = int(record["deleted"]) if record else 0
+            total_deleted += deleted
+            if deleted == 0:
+                return total_deleted
+        raise RuntimeError(
+            f"Memgraph clear exceeded {self.delete_max_batches} batches "
+            f"(batch_size={self.delete_batch_size}, deleted>={total_deleted})"
+        )
+
+    def _assert_seed_graph(self, session):
+        record = session.run("MATCH (n) RETURN count(n) AS nodes").single()
+        node_count = int(record["nodes"]) if record else 0
+        if node_count <= 0:
+            raise RuntimeError("Memgraph seed graph verification failed: node count is 0")
+
+    def reset_and_initialize(self, reset: bool = True):
         print("[Memgraph] 开始构建初始种子图...")
+        print("[Memgraph] 等待 Bolt 服务就绪...")
+        self._wait_until_ready()
+        if not reset:
+            print("[Memgraph] init-mode=reuse，跳过清空和种子注入。")
+            return
         with self.driver.session() as session:
-            print("正在清空现有数据库 (DETACH DELETE)...")
-            session.run("MATCH (n) DETACH DELETE n")
+            print("正在分批清空现有数据库 (DETACH DELETE)...")
+            deleted = self._clear_database(session)
+            print(f"清空完成，删除节点数: {deleted}")
             print("正在注入强类型的初始化拓扑...")
             session.run(self.seed_cypher).consume()
+            self._assert_seed_graph(session)
+            print("种子图注入完毕！")
+
+
+class Neo4jSeedGenerator:
+    def __init__(
+        self,
+        uri: str = "bolt://localhost:7687",
+        user: str = "neo4j",
+        password: str = "testpassword",
+        database: str = "neo4j",
+        ready_timeout_s: int = 90,
+        delete_batch_size: int = 1000,
+        delete_max_batches: int = 1000,
+    ):
+        self.uri = uri
+        self.auth = (user, password)
+        self.database = database
+        self.ready_timeout_s = ready_timeout_s
+        self.delete_batch_size = delete_batch_size
+        self.delete_max_batches = delete_max_batches
+        self.driver = GraphDatabase.driver(uri, auth=self.auth)
+        self.seed_cypher = SHARED_SEED_CYPHER
+
+    def close(self):
+        self.driver.close()
+
+    def _wait_until_ready(self):
+        deadline = time.time() + self.ready_timeout_s
+        last_error = None
+
+        while time.time() < deadline:
+            try:
+                self.driver.verify_connectivity()
+                with self.driver.session(database=self.database) as session:
+                    session.run("RETURN 1 AS ok").consume()
+                return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(2)
+
+        raise RuntimeError(f"Neo4j did not become ready within {self.ready_timeout_s}s: {last_error}")
+
+    def _clear_database(self, session):
+        total_deleted = 0
+        for _ in range(self.delete_max_batches):
+            record = session.run(
+                "MATCH (n) WITH n LIMIT $batch_size DETACH DELETE n RETURN count(n) AS deleted",
+                batch_size=self.delete_batch_size,
+            ).single()
+            deleted = int(record["deleted"]) if record else 0
+            total_deleted += deleted
+            if deleted == 0:
+                return total_deleted
+        raise RuntimeError(
+            f"Neo4j clear exceeded {self.delete_max_batches} batches "
+            f"(batch_size={self.delete_batch_size}, deleted>={total_deleted})"
+        )
+
+    def _assert_seed_graph(self, session):
+        record = session.run("MATCH (n) RETURN count(n) AS nodes").single()
+        node_count = int(record["nodes"]) if record else 0
+        if node_count <= 0:
+            raise RuntimeError("Neo4j seed graph verification failed: node count is 0")
+
+    def reset_and_initialize(self, reset: bool = True):
+        print(f"[Neo4j] 开始构建初始种子图 (Database: {self.database})...")
+        print("[Neo4j] 等待 Bolt 服务就绪...")
+        self._wait_until_ready()
+        if not reset:
+            print("[Neo4j] init-mode=reuse，跳过清空和种子注入。")
+            return
+        with self.driver.session(database=self.database) as session:
+            print("正在分批清空现有数据库 (DETACH DELETE)...")
+            deleted = self._clear_database(session)
+            print(f"清空完成，删除节点数: {deleted}")
+            print("正在注入强类型的初始化拓扑...")
+            session.run(self.seed_cypher).consume()
+            self._assert_seed_graph(session)
             print("种子图注入完毕！")
 
 # ========================================================================================

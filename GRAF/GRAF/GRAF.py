@@ -414,31 +414,100 @@ import time
 import traceback
 import argparse  
 import textwrap  
+import random
+import subprocess
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Set, Tuple, List
 
 
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
-antlr_path = os.path.join(current_dir, "antlr4-cypher", "antlr4_cypher")
+antlr_path = os.path.join(current_dir, "antlr4_cypher", "antlr4_cypher")
 if antlr_path not in sys.path:
     sys.path.insert(0, antlr_path)
 
 
-from antlr4 import InputStream, CommonTokenStream
-from antlr4.TokenStreamRewriter import TokenStreamRewriter
-from antlr4.error.ErrorListener import ErrorListener
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="GRAF Fuzzer - 跨引擎图数据库漏洞挖掘系统")
+    parser.add_argument(
+        "--target",
+        type=str,
+        required=True,
+        help="指定目标引擎，可选值: 'memgraph', 'neo4j', 'falkordb', 'kuzu', 'nebula'",
+    )
+    parser.add_argument("--skeleton-pool", help="覆盖默认 skeleton 池文件路径")
+    parser.add_argument("--max-iterations", type=int, default=0, help="最大循环次数；0 表示持续运行")
+    parser.add_argument("--context-refresh-interval", type=int, default=500, help="重新提取图上下文的间隔轮数")
+    parser.add_argument("--seed", type=int, help="固定随机种子，便于复现测试")
+    parser.add_argument("--crash-policy", choices=["legacy", "strict"], default="strict", help="Crash classification policy: legacy follows the uploaded project; strict reduces false positives")
+    parser.add_argument("--skeleton-filter-mode", choices=["strict", "legacy"], default="strict", help="Strict mode rejects skeletons with static semantic hazards before instantiation")
+    parser.add_argument("--init-mode", choices=["reset", "reuse"], default="reset", help="Startup database initialization mode. reset clears and seeds; reuse only checks connectivity")
+    parser.add_argument("--reseed-interval", type=int, default=0, help="Periodically clear and re-seed the target after this many executed queries; 0 disables periodic reseeding")
+    parser.add_argument("--init-delete-batch-size", type=int, default=1000, help="Nodes deleted per batch during Memgraph/Neo4j initialization and recovery")
+    parser.add_argument("--init-delete-max-batches", type=int, default=1000, help="Maximum delete batches before aborting Memgraph/Neo4j initialization")
+    parser.add_argument("--memgraph-uri", default="bolt://localhost:7687", help="Memgraph Bolt URI")
+    parser.add_argument("--memgraph-container", default="memgraph_fuzz_target", help="Memgraph Docker container name")
+    parser.add_argument("--memgraph-ready-timeout", type=int, default=60, help="Seconds to wait for Memgraph Bolt readiness after restart")
+    parser.add_argument("--memgraph-recovery-retries", type=int, default=3, help="Memgraph container restart/reconnect attempts after crash-like disconnects")
+    parser.add_argument("--neo4j-uri", default="bolt://localhost:7687", help="Neo4j Bolt URI")
+    parser.add_argument("--neo4j-user", default="neo4j", help="Neo4j username")
+    parser.add_argument("--neo4j-password", default="testpassword", help="Neo4j password")
+    parser.add_argument("--neo4j-database", default="neo4j", help="Neo4j database name")
+    parser.add_argument("--neo4j-container", default="neo4j_fuzz_target", help="Neo4j Docker container name")
+    parser.add_argument("--neo4j-ready-timeout", type=int, default=90, help="Seconds to wait for Neo4j Bolt readiness after startup/restart")
+    parser.add_argument("--neo4j-recovery-retries", type=int, default=3, help="Neo4j container restart/reconnect attempts after crash-like disconnects")
+    parser.add_argument("--neo4j-query-timeout", type=int, default=60, help="Neo4j server-side transaction timeout per query in seconds; 0 disables it")
+    parser.add_argument("--falkordb-query-timeout", type=int, default=60, help="Seconds before a FalkorDB query is killed and the container is reset")
+    return parser
+
+
+def resolve_docker_bolt_uri(container_name: str, container_port: int = 7687) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "port", container_name, str(container_port)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"无法通过 docker port 解析 {container_name}:{container_port}: {exc}") from exc
+
+    mappings = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not mappings:
+        raise RuntimeError(f"容器 {container_name} 没有暴露端口 {container_port}")
+
+    host_mapping = mappings[-1]
+    host, port = host_mapping.rsplit(":", 1)
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "localhost"
+    return f"bolt://{host}:{port}"
+
+
+if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+    build_arg_parser().parse_args()
+
+
+try:
+    from antlr4 import InputStream, CommonTokenStream
+except ImportError as exc:
+    raise SystemExit(
+        "Missing dependency: antlr4-python3-runtime. "
+        "Install it with `pip install antlr4-python3-runtime` before running GRAF."
+    ) from exc
 
 from CypherLexer import CypherLexer
 from CypherParser import CypherParser
 from CypherParserVisitor import CypherParserVisitor
 
-from GraphInitializer import MemgraphSeedGenerator, FalkorDBSeedGenerator, KuzuSeedGenerator, NebulaSeedGenerator
+from GraphInitializer import MemgraphSeedGenerator, Neo4jSeedGenerator, FalkorDBSeedGenerator, KuzuSeedGenerator, NebulaSeedGenerator
 from Instantiator import compile_and_instantiate
 from SkeletonFilter import GrafSkeletonFilter
 from FeedbackMonitor import FeedbackMonitor, FeedbackVector, ExecStatus, estimate_result_scale
 
-from GraphContext import MemgraphContextExtractor, FalkorDBContextExtractor, KuzuContextExtractor, NebulaContextExtractor
-from DB_Executor import MemgraphFuzzExecutor, FalkorDBFuzzExecutor, KuzuFuzzExecutor, NebulaFuzzExecutor
+from GraphContext import MemgraphContextExtractor, Neo4jContextExtractor, FalkorDBContextExtractor, KuzuContextExtractor, NebulaContextExtractor
+from DB_Executor import ExecutionOutcome, MemgraphFuzzExecutor, Neo4jFuzzExecutor, FalkorDBFuzzExecutor, KuzuFuzzExecutor, NebulaFuzzExecutor
 
 # 引入工业级图感知变异器及上下文结构
 from GraphAwareMutator import (
@@ -446,7 +515,8 @@ from GraphAwareMutator import (
     SchemaMetadata, 
     ValueDictionary, 
     GlobalGraphState, 
-    compile_and_mutate
+    compile_and_mutate,
+    harden_query_shape
 )
 
 
@@ -477,7 +547,7 @@ class FuzzDashboard:
                 
         return "\n".join(display_lines)
 
-    def update(self, drawn, filtered, executed, passed, exec_failed, crashes, current_q=None):
+    def update(self, drawn, filtered, executed, passed, exec_failed, crashes, resource_exhaustions=0, current_q=None):
         if current_q:
             self.current_query_display = self._format_query(current_q)
 
@@ -498,6 +568,7 @@ class FuzzDashboard:
 执行失败 : {exec_failed} 次 
 执行通过率: {pass_rate:.2f}%
 发现崩溃 : {crashes} 次 
+资源耗尽 : {resource_exhaustions} 次
 -------------------------------------------------------------------
 {self.current_query_display}
 ===================================================================
@@ -529,19 +600,51 @@ def estimate_safe_diameter(node_count: int, edge_count: int) -> int:
     except Exception:
         return 5
 
-def apply_ast_mutation(executable_query: str, real_schema, real_state, strategy) -> str:
+def normalize_topology_by_source(topology) -> Dict[str, List[Tuple[str, str]]]:
+    normalized: Dict[str, List[Tuple[str, str]]] = {}
+    if not topology:
+        return normalized
+
+    for key, value in topology.items():
+        if isinstance(value, dict):
+            pairs = value.items()
+        else:
+            pairs = value
+
+        for item in pairs:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                continue
+
+            first, second = item
+            if isinstance(first, str) and isinstance(second, str):
+                src_label, dst_label = first, second
+                rel_type = key
+            else:
+                continue
+
+            normalized.setdefault(src_label, []).append((rel_type, dst_label))
+
+    return normalized
+
+def apply_ast_mutation(
+    executable_query: str,
+    real_schema,
+    real_state,
+    strategy,
+) -> str:
     def safe_extract(obj, key, default=None):
         if isinstance(obj, dict):
             return obj.get(key, default)
         return getattr(obj, key, default)
 
-    v_count = safe_extract(real_state, 'node_count', 0)
-    e_count = safe_extract(real_state, 'edge_count', 0)
+    v_count = safe_extract(real_state, 'node_count', safe_extract(real_state, 'total_nodes', 0))
+    e_count = safe_extract(real_state, 'edge_count', safe_extract(real_state, 'total_edges', 0))
     dynamic_diameter = estimate_safe_diameter(v_count, e_count)
 
+    topology = safe_extract(real_schema, 'topology', {})
     schema_ctx = SchemaMetadata(
         labels=set(safe_extract(real_schema, 'labels', set())),
-        topology=safe_extract(real_schema, 'topology', {}),
+        topology=normalize_topology_by_source(topology),
         properties=safe_extract(real_schema, 'properties', {})
     )
     
@@ -569,23 +672,19 @@ def apply_ast_mutation(executable_query: str, real_schema, real_state, strategy)
         strategy=strategy
     )
     
-    return mutated_query
+    return harden_query_shape(mutated_query, global_state_ctx, strategy)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GRAF Fuzzer - 跨引擎图数据库漏洞挖掘系统")
-    parser.add_argument(
-        "--target", 
-        type=str, 
-        required=True, 
-        help="指定目标引擎，可选值: 'memgraph', 'falkordb', 'kuzu', 'nebula'"
-    )
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     TARGET_ENGINE = args.target.lower()
+    if args.seed is not None:
+        random.seed(args.seed)
     
-    if TARGET_ENGINE not in ["memgraph", "falkordb", "kuzu", "nebula"]:
-        print(f"致命错误: 不支持的目标引擎 '{args.target}'。请使用 'memgraph', 'falkordb', 'kuzu', 'nebula'。")
+    if TARGET_ENGINE not in ["memgraph", "neo4j", "falkordb", "kuzu", "nebula"]:
+        print(f"致命错误: 不支持的目标引擎 '{args.target}'。请使用 'memgraph', 'neo4j', 'falkordb', 'kuzu', 'nebula'。")
         sys.exit(1)
 
     if TARGET_ENGINE == "kuzu":
@@ -594,6 +693,8 @@ if __name__ == "__main__":
         POOL_FILE = "skeleton_pool_nebula"
     else:
         POOL_FILE = "skeleton_pool"
+    if args.skeleton_pool:
+        POOL_FILE = args.skeleton_pool
 
     VERBOSE_LOG_FILE = f"fuzz_verbose_{TARGET_ENGINE}.log"
     with open(VERBOSE_LOG_FILE, "w", encoding="utf-8") as f:
@@ -606,16 +707,69 @@ if __name__ == "__main__":
     log_verbose(f"🚀 [GRAF Fuzzer] 目标引擎已设定为: {TARGET_ENGINE.upper()}")
 
     if TARGET_ENGINE == "memgraph":
-        URI = "bolt://localhost:7687"
+        URI = args.memgraph_uri
         USER = ""
         PASSWORD = ""
-        generator = MemgraphSeedGenerator(URI, USER, PASSWORD)
-        generator.reset_and_initialize()
+        generator = MemgraphSeedGenerator(
+            URI,
+            USER,
+            PASSWORD,
+            ready_timeout_s=args.memgraph_ready_timeout,
+            delete_batch_size=args.init_delete_batch_size,
+            delete_max_batches=args.init_delete_max_batches,
+        )
+        generator.reset_and_initialize(reset=args.init_mode == "reset")
         seed_cypher_text = getattr(generator, 'seed_cypher', '')
         generator.close()
         extractor = MemgraphContextExtractor(URI, USER, PASSWORD)
-        executor = MemgraphFuzzExecutor(URI, USER, PASSWORD, seed_cypher=seed_cypher_text)
-        executor.container_name = "memgraph_fuzz_target"
+        executor = MemgraphFuzzExecutor(
+            URI,
+            USER,
+            PASSWORD,
+            seed_cypher=seed_cypher_text,
+            container_name=args.memgraph_container,
+            ready_timeout_s=args.memgraph_ready_timeout,
+            recovery_retries=args.memgraph_recovery_retries,
+            delete_batch_size=args.init_delete_batch_size,
+            delete_max_batches=args.init_delete_max_batches,
+            crash_policy=args.crash_policy,
+        )
+
+    elif TARGET_ENGINE == "neo4j":
+        neo4j_auto_uri = args.neo4j_uri == "auto"
+        URI = resolve_docker_bolt_uri(args.neo4j_container) if neo4j_auto_uri else args.neo4j_uri
+        print(f"[Neo4j] Bolt URI: {URI}")
+        USER = args.neo4j_user
+        PASSWORD = args.neo4j_password
+        DATABASE = args.neo4j_database
+        generator = Neo4jSeedGenerator(
+            URI,
+            USER,
+            PASSWORD,
+            database=DATABASE,
+            ready_timeout_s=args.neo4j_ready_timeout,
+            delete_batch_size=args.init_delete_batch_size,
+            delete_max_batches=args.init_delete_max_batches,
+        )
+        generator.reset_and_initialize(reset=args.init_mode == "reset")
+        seed_cypher_text = getattr(generator, 'seed_cypher', '')
+        generator.close()
+        extractor = Neo4jContextExtractor(URI, USER, PASSWORD, database=DATABASE)
+        executor = Neo4jFuzzExecutor(
+            URI,
+            USER,
+            PASSWORD,
+            database=DATABASE,
+            seed_cypher=seed_cypher_text,
+            container_name=args.neo4j_container,
+            ready_timeout_s=args.neo4j_ready_timeout,
+            auto_resolve_uri=neo4j_auto_uri,
+            recovery_retries=args.neo4j_recovery_retries,
+            delete_batch_size=args.init_delete_batch_size,
+            delete_max_batches=args.init_delete_max_batches,
+            query_timeout_s=args.neo4j_query_timeout,
+            crash_policy=args.crash_policy,
+        )
         
     elif TARGET_ENGINE == "falkordb":
         HOST = "localhost"
@@ -626,7 +780,14 @@ if __name__ == "__main__":
         generator.reset_and_initialize()
         seed_cypher_text = getattr(generator, 'seed_cypher', '')
         extractor = FalkorDBContextExtractor(host=HOST, port=PORT, password=PASSWORD, graph_name=GRAPH_NAME)
-        executor = FalkorDBFuzzExecutor(host=HOST, port=PORT, password=PASSWORD, graph_name=GRAPH_NAME, seed_cypher=seed_cypher_text)
+        executor = FalkorDBFuzzExecutor(
+            host=HOST,
+            port=PORT,
+            password=PASSWORD,
+            graph_name=GRAPH_NAME,
+            seed_cypher=seed_cypher_text,
+            query_timeout_s=args.falkordb_query_timeout,
+        )
         executor.container_name = "falkordb_fuzz_target" 
         executor.initializer = generator
 
@@ -657,7 +818,10 @@ if __name__ == "__main__":
     real_schema, real_state = extractor.extract_context()
     extractor.close()
     
-    filter_engine = GrafSkeletonFilter()
+    filter_engine = GrafSkeletonFilter(
+        target_engine=TARGET_ENGINE,
+        strict=args.skeleton_filter_mode == "strict",
+    )
     monitor = FeedbackMonitor(seed_cypher=seed_cypher_text)
     
     log_verbose("\n启动无限循环图变异测试...\n")
@@ -669,15 +833,110 @@ if __name__ == "__main__":
     stats_passed = 0          
     stats_exec_failed = 0     
     stats_crashes = 0         
+    stats_resource_exhaustions = 0
+    last_submitted_query = None
+    recorded_oob_disconnects = set()
+
+    def refresh_context_once():
+        if TARGET_ENGINE == "memgraph":
+            return MemgraphContextExtractor(URI, USER, PASSWORD)
+        if TARGET_ENGINE == "neo4j":
+            current_uri = getattr(executor, "uri", URI)
+            return Neo4jContextExtractor(current_uri, USER, PASSWORD, database=DATABASE)
+        if TARGET_ENGINE == "falkordb":
+            return FalkorDBContextExtractor(host=HOST, port=PORT, password=PASSWORD, graph_name=GRAPH_NAME)
+        if TARGET_ENGINE == "kuzu":
+            return KuzuContextExtractor(db_path=DB_PATH)
+        if TARGET_ENGINE == "nebula":
+            return NebulaContextExtractor(host=HOST, port=PORT, user=USER, password=PASSWORD, space=SPACE)
+        raise RuntimeError(f"Unsupported target for context refresh: {TARGET_ENGINE}")
+
+    def periodic_reseed_and_refresh():
+        if not hasattr(executor, "reset_to_seed"):
+            log_verbose(f"[周期初始化] {TARGET_ENGINE} 暂未实现轻量重灌种子图，跳过。")
+            return real_schema, real_state
+
+        log_verbose(f"[周期初始化] 已执行 {stats_executed} 条查询，开始清空并重灌种子图...")
+        try:
+            executor.reset_to_seed()
+        except Exception:
+            if TARGET_ENGINE not in {"neo4j", "memgraph", "falkordb"}:
+                raise
+            log_verbose(f"[周期初始化] 轻量重置失败，尝试恢复流程。\n{traceback.format_exc()}")
+            if hasattr(executor, "_reconnect_and_reseed"):
+                executor._reconnect_and_reseed()
+            elif hasattr(executor, "_recover_container_and_seed"):
+                executor._recover_container_and_seed()
+            else:
+                raise
+
+        if TARGET_ENGINE == "neo4j":
+            globals()["URI"] = getattr(executor, "uri", URI)
+
+        temp_extractor = None
+        try:
+            temp_extractor = refresh_context_once()
+            refreshed_schema, refreshed_state = temp_extractor.extract_context()
+            log_verbose("[周期初始化] 重灌后上下文刷新成功")
+            return refreshed_schema, refreshed_state
+        finally:
+            if temp_extractor:
+                temp_extractor.close()
+
+    def record_out_of_band_disconnect(phase: str, exc: Exception, suspected_query: str, executed_count: int):
+        if not suspected_query:
+            return None
+        if not all(hasattr(executor, name) for name in ("_collect_crash_evidence", "_looks_confirmed_crash", "_write_crash_artifact", "_set_execution_result")):
+            return None
+
+        dedupe_key = (phase, executed_count, suspected_query)
+        if dedupe_key in recorded_oob_disconnects:
+            return None
+        recorded_oob_disconnects.add(dedupe_key)
+
+        msg = f"{phase}: {type(exc).__name__}: {exc}"
+        evidence = executor._collect_crash_evidence({
+            "detection_phase": phase,
+            "driver_error": msg,
+            "trigger_confidence": "suspected_last_submitted_query",
+            "executed_count_at_detection": str(executed_count),
+        })
+        outcome = ExecutionOutcome.CONFIRMED_CRASH if executor._looks_confirmed_crash(evidence) else ExecutionOutcome.CRASH_LIKE
+        artifact_path = executor._write_crash_artifact(outcome, suspected_query, msg, evidence)
+        if hasattr(executor, "error_ledger"):
+            executor.error_ledger[outcome.value] += 1
+        if hasattr(executor, "bug_reports"):
+            executor.bug_reports.append({
+                "query": suspected_query,
+                "artifact": artifact_path,
+                "outcome": outcome.value,
+                "detection_phase": phase,
+            })
+        result = executor._set_execution_result(
+            outcome,
+            suspected_query,
+            msg,
+            output="DATABASE DISCONNECT DETECTED OUTSIDE QUERY EXECUTION",
+            error_type=type(exc).__name__,
+            health=evidence,
+            artifact_path=artifact_path,
+        )
+        log_verbose(f"[异步断连] {phase} 检测到目标断连，按 {outcome.value} 记录。疑似触发语句: {suspected_query}")
+        log_verbose(f"[异步断连] 证据文件: {artifact_path}")
+        return result
     
     try:
         skeletons = load_skeletons_from_file(POOL_FILE)
         seen_queries = set(skeletons) 
         
         round_idx = 0                  
-        CONTEXT_REFRESH_INTERVAL = 500 
+        CONTEXT_REFRESH_INTERVAL = args.context_refresh_interval 
         
         while True:
+            if args.max_iterations and round_idx >= args.max_iterations:
+                log_verbose(f"[停止] 达到最大循环次数: {args.max_iterations}")
+                break
+
             current_idx = round_idx % len(skeletons)
             skeleton = skeletons[current_idx]
             
@@ -686,23 +945,42 @@ if __name__ == "__main__":
             
             if round_idx > 0 and round_idx % CONTEXT_REFRESH_INTERVAL == 0:
                 log_verbose("[环境同步] 正在重新提取数据库真实状态与规模...")
-                if TARGET_ENGINE == "memgraph":
-                    temp_extractor = MemgraphContextExtractor(URI, USER, PASSWORD)
-                elif TARGET_ENGINE == "falkordb":
-                    temp_extractor = FalkorDBContextExtractor(host=HOST, port=PORT, password=PASSWORD, graph_name=GRAPH_NAME)
-                elif TARGET_ENGINE == "kuzu":
-                    temp_extractor = KuzuContextExtractor(db_path=DB_PATH)
-                elif TARGET_ENGINE == "nebula":
-                    temp_extractor = NebulaContextExtractor(host=HOST, port=PORT, user=USER, password=PASSWORD, space=SPACE)
-                
-                real_schema, real_state = temp_extractor.extract_context()
-                temp_extractor.close()
+
+                temp_extractor = None
+                try:
+                    temp_extractor = refresh_context_once()
+                    real_schema, real_state = temp_extractor.extract_context()
+                except Exception as refresh_exc:
+                    if TARGET_ENGINE not in {"neo4j", "memgraph"}:
+                        raise
+                    oob_result = record_out_of_band_disconnect(
+                        "context_refresh",
+                        refresh_exc,
+                        last_submitted_query,
+                        stats_executed,
+                    )
+                    if oob_result is not None:
+                        stats_crashes += 1
+                    log_verbose(f"[环境同步] {TARGET_ENGINE} 上下文刷新失败，尝试恢复连接...\n{traceback.format_exc()}")
+                    try:
+                        if temp_extractor:
+                            temp_extractor.close()
+                        executor._reconnect_and_reseed()
+                        URI = getattr(executor, "uri", URI)
+                        temp_extractor = refresh_context_once()
+                        real_schema, real_state = temp_extractor.extract_context()
+                        log_verbose(f"[环境同步] {TARGET_ENGINE} 恢复后上下文刷新成功")
+                    except Exception:
+                        log_verbose(f"[环境同步] {TARGET_ENGINE} 恢复后仍无法刷新上下文，继续使用旧上下文。\n{traceback.format_exc()}")
+                finally:
+                    if temp_extractor:
+                        temp_extractor.close()
             
             filter_result = filter_engine.validate(skeleton)
             if not filter_result.is_valid:
                 log_verbose(f"拦截: {filter_result.reason}\n")
                 stats_filtered += 1
-                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes)
+                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes, stats_resource_exhaustions)
                 continue
                 
             try:
@@ -710,7 +988,16 @@ if __name__ == "__main__":
                 formatted_base = " ".join(executable_query.split())
                 log_verbose(f"基础查询 (Q0): {formatted_base}")
                 
-                mutated_query = apply_ast_mutation(formatted_base, real_schema, real_state, monitor.current_strategy)
+                try:
+                    mutated_query = apply_ast_mutation(
+                        formatted_base,
+                        real_schema,
+                        real_state,
+                        monitor.current_strategy,
+                    )
+                except Exception:
+                    log_verbose(f"[变异回退] AST 变异失败，使用基础查询继续执行。\n{traceback.format_exc()}")
+                    mutated_query = formatted_base
                 formatted_mut = " ".join(mutated_query.split())
                 log_verbose(f"AST变异 (Q_mut): {formatted_mut}")
 
@@ -723,23 +1010,59 @@ if __name__ == "__main__":
 
                 stats_executed += 1
                 
-                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes, current_q=formatted_mut)
+                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes, stats_resource_exhaustions, current_q=formatted_mut)
                 
                 start_time = time.time()
+                last_submitted_query = formatted_mut
+                if hasattr(executor, "set_execution_context"):
+                    executor.set_execution_context(
+                        target=TARGET_ENGINE,
+                        round_idx=round_idx,
+                        stats_drawn=stats_drawn,
+                        stats_executed=stats_executed,
+                        seed=args.seed,
+                        skeleton=skeleton,
+                        base_query=formatted_base,
+                        mutated_query=formatted_mut,
+                        context_refresh_interval=args.context_refresh_interval,
+                        reseed_interval=args.reseed_interval,
+                        mutation_strategy=monitor.current_strategy,
+                    )
                 is_success, msg, execution_output = executor.execute_single(formatted_mut)
+                if TARGET_ENGINE == "neo4j":
+                    URI = getattr(executor, "uri", URI)
                 exec_time_ms = (time.time() - start_time) * 1000
 
-                status = ExecStatus.SUCCESS
-                if not is_success:
-                    msg_lower = msg.lower()
-                    if any(err in msg_lower for err in ["clienterror", "parsing error", "syntax error", "extraneous input"]):
-                        status = ExecStatus.ERROR
-                    elif any(keyword in msg_lower for keyword in ["crash", "connection refused", "connection reset", "closed", "broken pipe", "socket", "service unavailable", "assertion failed"]):
-                        status = ExecStatus.CRASH
-                    elif "timeout" in msg_lower:
+                execution_result = getattr(executor, "last_execution", None)
+                if execution_result is not None:
+                    msg = execution_result.status_message()
+                    execution_output = execution_result.output
+                    if execution_result.outcome == ExecutionOutcome.SUCCESS:
+                        status = ExecStatus.SUCCESS
+                    elif execution_result.outcome == ExecutionOutcome.TIMEOUT:
                         status = ExecStatus.TIMEOUT
+                    elif execution_result.outcome == ExecutionOutcome.RESOURCE_EXHAUSTION:
+                        status = ExecStatus.RESOURCE_EXHAUSTION
+                    elif execution_result.outcome in {ExecutionOutcome.CRASH_LIKE, ExecutionOutcome.CONFIRMED_CRASH}:
+                        status = ExecStatus.CRASH
                     else:
                         status = ExecStatus.ERROR
+                else:
+                    status = ExecStatus.SUCCESS
+                    if not is_success:
+                        msg_lower = msg.lower()
+                        if msg.startswith(("CRASH_LIKE:", "CRASH:", "CONFIRMED_CRASH:")):
+                            status = ExecStatus.CRASH
+                        elif msg.startswith("RESOURCE_EXHAUSTION:"):
+                            status = ExecStatus.RESOURCE_EXHAUSTION
+                        elif msg.startswith("TIMEOUT:"):
+                            status = ExecStatus.TIMEOUT
+                        elif msg.startswith(("REJECTED:", "RUNTIME_ERROR:")):
+                            status = ExecStatus.ERROR
+                        elif any(err in msg_lower for err in ["clienterror", "parsing error", "syntax error", "extraneous input"]):
+                            status = ExecStatus.ERROR
+                        else:
+                            status = ExecStatus.ERROR
 
                 scale_r = estimate_result_scale(execution_output)
             
@@ -751,15 +1074,20 @@ if __name__ == "__main__":
                 )
                 
                 new_strategy, is_interesting = monitor.process_feedback(feedback_vec)
-                
-                if is_interesting and formatted_mut not in seen_queries:
+
+                if monitor.should_promote_seed(feedback_vec, is_interesting) and formatted_mut not in seen_queries:
                     skeletons.append(formatted_mut)
                     seen_queries.add(formatted_mut)
                     log_verbose(f"[种子池进化] 捕获高价值用例！已追加至队列尾部")
+                elif is_interesting:
+                    log_verbose(f"[反馈抑制] 高延迟/异常候选不进入主种子池: {monitor.classify_latency(feedback_vec).value}")
                 
                 if status == ExecStatus.CRASH:
                     stats_crashes += 1
                     log_verbose(f"触发引擎崩溃: {msg}")
+                elif status == ExecStatus.RESOURCE_EXHAUSTION:
+                    stats_resource_exhaustions += 1
+                    log_verbose(f"触发资源耗尽候选: {msg}")
                 elif is_success:
                     stats_passed += 1
                     log_verbose(f"执行状态: Success ({exec_time_ms:.2f}ms, Scale: {scale_r})")
@@ -767,15 +1095,18 @@ if __name__ == "__main__":
                     stats_exec_failed += 1
                     log_verbose(f"执行失败: {msg}")
 
+                if args.reseed_interval > 0 and stats_executed > 0 and stats_executed % args.reseed_interval == 0:
+                    real_schema, real_state = periodic_reseed_and_refresh()
+
                 log_verbose("-" * 60 + "\n")
                 
-                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes)
+                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes, stats_resource_exhaustions)
                     
             except Exception as e:
                 stats_executed += 1
                 stats_exec_failed += 1
                 log_verbose(f"严重内部崩溃发生！\n{traceback.format_exc()}\n" + "-" * 60 + "\n")
-                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes)
+                dashboard.update(stats_drawn, stats_filtered, stats_executed, stats_passed, stats_exec_failed, stats_crashes, stats_resource_exhaustions)
 
     except KeyboardInterrupt:
         print("\n\n测试终止 (Ctrl+C)！")        

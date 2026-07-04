@@ -32,6 +32,56 @@ class GlobalGraphState:
     def calculate_max_limit(self) -> int:
         return max(10, min(1000, (self.node_count + self.edge_count) // 10))
 
+def harden_query_shape(query: str, state: GlobalGraphState, strategy=None) -> str:
+    max_path_bound = getattr(strategy, "max_path_bound", state.diameter) if strategy else state.diameter
+    max_limit = getattr(strategy, "max_limit", state.calculate_max_limit()) if strategy else state.calculate_max_limit()
+    max_path_bound = max(1, min(int(max_path_bound), max(1, state.diameter)))
+    max_limit = max(1, min(int(max_limit), state.calculate_max_limit()))
+
+    def clamp_range(match):
+        lower = int(match.group(1) or 1)
+        upper = int(match.group(2)) if match.group(2) else max_path_bound
+        lower = max(1, min(lower, max_path_bound))
+        upper = max(lower, min(upper, max_path_bound))
+        return f"*{lower}..{upper}"
+
+    query = re.sub(r'\*(\d+)?\.\.(\d+)?', clamp_range, query)
+    query = re.sub(r'\*(?!\d|\.)', f"*1..{max_path_bound}", query)
+
+    if re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE):
+        query = re.sub(
+            r'\bLIMIT\s+(\d+)',
+            lambda m: f"LIMIT {min(int(m.group(1)), max_limit)}",
+            query,
+            flags=re.IGNORECASE,
+        )
+    elif re.search(r'\bRETURN\b', query, re.IGNORECASE):
+        query = query.rstrip().rstrip(";") + f" LIMIT {max_limit}"
+
+    if re.search(r'\bMATCH\s*\([^)]*\)\s*,\s*\([^)]*\)', query, re.IGNORECASE):
+        query = re.sub(r'\bMATCH\s*\(([^)]*)\)\s*,\s*\(([^)]*)\)', r'MATCH (\1) WITH * LIMIT 25 MATCH (\2)', query, count=1, flags=re.IGNORECASE)
+
+    def guard_shortest_path(match):
+        full_query = match.group(0)
+        left = match.group("left")
+        right = match.group("right")
+        suffix = match.group("suffix")
+        guard = f"id({left}) <> id({right})"
+        if re.search(r'\bWHERE\b', suffix, re.IGNORECASE):
+            return re.sub(r'\bWHERE\b', f"WHERE {guard} AND", full_query, count=1, flags=re.IGNORECASE)
+        guarded = re.sub(r'\b(RETURN|WITH)\b', f"WHERE {guard} " + r'\1', full_query, count=1, flags=re.IGNORECASE)
+        return guarded if guarded != full_query else full_query + f" WHERE {guard}"
+
+    query = re.sub(
+        r'\bMATCH\s+\w+\s*=\s*(?:shortestPath|allShortestPaths)\s*\(\(\s*(?P<left>\w+)\s*:[^)]+\)\s*-\[[^\]]*\]\s*[-<>]*\s*\(\s*(?P<right>\w+)\s*:[^)]+\)\)(?P<suffix>.*)',
+        guard_shortest_path,
+        query,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return query
+
 class GraphAwareMutator(CypherParserVisitor):
     def __init__(self, token_stream, schema: SchemaMetadata, val_dict: ValueDictionary, state: GlobalGraphState):
         super().__init__()
@@ -59,6 +109,8 @@ class GraphAwareMutator(CypherParserVisitor):
         
         text = ctx.getText().upper()
         if text.startswith("MATCH") and not text.startswith("OPTIONAL"):
+            if not getattr(self, "ALLOW_TOPOLOGY_EXPANSION", True):
+                return None
             if random.random() < self.MUTATION_RATE and self.scope_vars:
                 src_var = random.choice(list(self.scope_vars.keys()))
                 src_label = self.scope_vars[src_var]
@@ -115,7 +167,7 @@ class GraphAwareMutator(CypherParserVisitor):
 
 
     def visitReturnSt(self, ctx):
-        if random.random() < self.MUTATION_RATE and len(self.scope_vars) >= 2:
+        if random.random() < self.MUTATION_RATE and len(self.scope_vars) >= 2 and getattr(self, "ALLOW_EXPENSIVE_AGGREGATION", True):
             vars_list = list(self.scope_vars.keys())
             var1, var2 = vars_list[0], vars_list[1]
             c_mut_var = f"c_mut_{random.randint(10, 99)}"
@@ -134,6 +186,7 @@ class GraphAwareMutator(CypherParserVisitor):
         self.visitChildren(ctx)
         if random.random() < self.MUTATION_RATE:
             safe_limit = self.state.calculate_max_limit()
+            safe_limit = min(safe_limit, getattr(self, "MAX_LIMIT", safe_limit))
             # 整体替换 LIMIT 子句为安全值
             if ctx.start and ctx.stop:
                 self.rewriter.replaceRange(ctx.start.tokenIndex, ctx.stop.tokenIndex, f"LIMIT {safe_limit}")
@@ -147,7 +200,7 @@ class GraphAwareMutator(CypherParserVisitor):
             match = re.search(r'\.\.(\d+)', text)
             if match:
                 upper = int(match.group(1))
-                safe_bound = min(upper, self.state.diameter)
+                safe_bound = min(upper, self.state.diameter, getattr(self, "MAX_PATH_BOUND", self.state.diameter))
                 new_text = re.sub(r'\.\.\d+', f"..{safe_bound}", text)
                 if ctx.start and ctx.stop:
                     self.rewriter.replaceRange(ctx.start.tokenIndex, ctx.stop.tokenIndex, new_text)
@@ -161,7 +214,12 @@ def compile_and_mutate(token_stream, parse_tree, schema: SchemaMetadata, val_dic
     
     # 将反馈监控器的动态策略 (Strategy) 注入到变异器中
     if strategy:
-        mutator.MUTATION_RATE = (strategy.topology_rate + strategy.predicate_rate + strategy.clause_rate) / 3.0
+        mutation_rate_scale = max(0.0, min(float(getattr(strategy, "mutation_rate_scale", 1.0)), 1.0))
+        mutator.MUTATION_RATE = ((strategy.topology_rate + strategy.predicate_rate + strategy.clause_rate) / 3.0) * mutation_rate_scale
+        mutator.MAX_LIMIT = getattr(strategy, "max_limit", state.calculate_max_limit())
+        mutator.MAX_PATH_BOUND = getattr(strategy, "max_path_bound", state.diameter)
+        mutator.ALLOW_EXPENSIVE_AGGREGATION = getattr(strategy, "allow_expensive_aggregation", True)
+        mutator.ALLOW_TOPOLOGY_EXPANSION = getattr(strategy, "allow_topology_expansion", True)
         
         # 动态缩放图的遍历深度
         mutator.state.diameter = max(1, int(mutator.state.diameter * strategy.depth_scale_factor))
@@ -169,4 +227,4 @@ def compile_and_mutate(token_stream, parse_tree, schema: SchemaMetadata, val_dic
     # 触发标准 AST 游走
     mutator.visit(parse_tree)
     
-    return mutator.rewriter.getDefaultText()
+    return harden_query_shape(mutator.rewriter.getDefaultText(), mutator.state, strategy)
