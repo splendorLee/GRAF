@@ -1,58 +1,79 @@
-GDBMS	Version	Minimal Test Case	Bug Type	Confirmed	CVE ID
-FalkorDB	4.14.8	"GRAPH.QUERY fuzz_graph "CREATE (:Paper)-[:REL]->(:Paper)"
-GRAPH.QUERY fuzz_graph "MATCH p = allShortestPaths((a:Paper)-[*..2]-(b:Paper)) WITH *, count(a) AS count_a RETURN p""	Segmentation fault	yes	CVE-2026-38**4
-FalkorDB	4.16.1	"GRAPH.QUERY fuzz_graph "CREATE (n1:Conference {id: point({latitude: 2, longitude: 5})}) RETURN n1;"
-GRAPH.QUERY fuzz_graph "MATCH (n1:Conference) RETURN n1.id, count(*) AS v1 ORDER BY v1 DESC;""	Assertion failure	yes	CVE-2026-38**5
-FalkorDB	4.16.1	"GRAPH.QUERY fuzz_graph "UNWIND range(1, 10) AS i CREATE (:Node {id: i})"
-GRAPH.QUERY fuzz_graph "MATCH (a:Node), (b:Node) WHERE a.id <> b.id CREATE (a)-[:R]->(b)"
-GRAPH.QUERY fuzz_graph "MATCH (a:Node)-[*]->(b:Node) WITH collect(b) AS bs LIMIT 1 DETACH DELETE bs[0] RETURN bs[0]""	Out-of-memory	yes	CVE-2026-38**6
-FalkorDB	4.14.10	GRAPH.QUERY fuzz_graph "WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix"	Out-of-memory	yes
-FalkorDB	4.14.10	"GRAPH.QUERY fuzz_graph "UNWIND range(1, 50) AS i CREATE (:VLP {id: i})"
-GRAPH.QUERY fuzz_graph "MATCH (a:VLP), (b:VLP) WHERE a.id <> b.id CREATE (a)-[:NEXT]->(b)"
-GRAPH.QUERY fuzz_graph "MATCH p=(:VLP)-[*1..10]->(:VLP) RETURN collect(p)""	Out-of-memory	yes
-FalkorDB	4.14.10	"GRAPH.QUERY fuzz_graph "UNWIND range(1, 1000) AS i CREATE (:Victim {id: i})"
-GRAPH.QUERY fuzz_graph "MATCH (a:Victim), (b:Victim) CREATE (a)-[:AA {data: 'padding'}]->(b)""	Segmentation fault	yes	CVE-2026-30**9
-FalkorDB	4.14.10	GRAPH.QUERY fuzz_gragh "WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c})"	Out-of-memory	yes	CVE-2026-38**5
-FalkorDB	4.14.10	GRAPH.QUERY fuzz_gragh "CALL {UNWIND range(0, 2147483647) AS v1 CREATE (n:Bomb) DETACH DELETE n} RETURN count(*)"	Out-of-memory	yes	CVE-2026-38**8
-FalkorDB	4.16.1	GRAPH.QUERY grammar_fuzz "RETURN [x IN [1] | reduce(s=0, x IN [1] | s + [x IN [1] | x][0])][0]"	Segmentation fault	yes
-FalkorDB	4.16.1	"GRAPH.QUERY fuzz_graph "CREATE (a:Paper)-[:REL]->(a);"
-GRAPH.QUERY fuzz_graph "CREATE (b:Paper);"
-GRAPH.QUERY fuzz_graph "MATCH (n1:Paper) RETURN [(n1)-[r1:REL]->(n2:Paper) WHERE (n2 IS NOT NULL) | count(n1)] AS v1;""	Assertion failure	yes	CVE-2026-38**7
-FalkorDB	4.16.3	GRAPH.QUERY fuzz_graph "CREATE (a)-[r:R]->(a) WITH r, a DETACH DELETE a RETURN startNode(r)"	Use-after-free	yes	CVE-2026-38**7
-Memgraph	3.10.1	RETURN replace("A", "", "B");	Segmentation fault	yes	CVE-2026-30**8
-Memgraph	3.7.1	"CREATE (:TestNode {val: 1});
-MATCH (n) DETACH DELETE n RETURN n {.*};"	Use-after-free	yes	CVE-2025-69**7
-Memgraph	3.7.0	UNWIND [9, 2, 7, 8, 1] AS v1 WITH v1, 'floor' AS v2 WHERE ([(pc_a)--(pc_b) | pc_a] < toString(CASE WHEN NOT (true) THEN true ELSE CASE WHEN true THEN 63 ELSE 82 END END)) SET v2.active = false RETURN v1, v2 ORDER BY v2 DESC;	Segmentation fault	yes	CVE-2025-67**9
-Memgraph	3.7.1	"UNWIND range(1, 50) AS i CREATE (:VLP {id: i});
+﻿GDBMS,Version,Minimal Test Case,Bug Type,Confirmed,CVE ID
+FalkorDB,4.14.8,"GRAPH.QUERY fuzz_graph ""CREATE (:Paper)-[:REL]->(:Paper)""
+GRAPH.QUERY fuzz_graph ""MATCH p = allShortestPaths((a:Paper)-[*..2]-(b:Paper)) WITH *, count(a) AS count_a RETURN p""",Segmentation fault,yes,CVE-2026-38**4
+FalkorDB,4.16.1,"GRAPH.QUERY fuzz_graph ""CREATE (n1:Conference {id: point({latitude: 2, longitude: 5})}) RETURN n1;""
+GRAPH.QUERY fuzz_graph ""MATCH (n1:Conference) RETURN n1.id, count(*) AS v1 ORDER BY v1 DESC;""",Assertion failure,yes,CVE-2026-38**5
+FalkorDB,4.16.1,"GRAPH.QUERY fuzz_graph ""UNWIND range(1, 10) AS i CREATE (:Node {id: i})""
+GRAPH.QUERY fuzz_graph ""MATCH (a:Node), (b:Node) WHERE a.id <> b.id CREATE (a)-[:R]->(b)""
+GRAPH.QUERY fuzz_graph ""MATCH (a:Node)-[*]->(b:Node) WITH collect(b) AS bs LIMIT 1 DETACH DELETE bs[0] RETURN bs[0]""",Out-of-memory,yes,CVE-2026-38**6
+FalkorDB,4.14.10,"GRAPH.QUERY fuzz_graph ""WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix""",Out-of-memory,yes,
+FalkorDB,4.14.10,"GRAPH.QUERY fuzz_graph ""UNWIND range(1, 50) AS i CREATE (:VLP {id: i})""
+GRAPH.QUERY fuzz_graph ""MATCH (a:VLP), (b:VLP) WHERE a.id <> b.id CREATE (a)-[:NEXT]->(b)""
+GRAPH.QUERY fuzz_graph ""MATCH p=(:VLP)-[*1..10]->(:VLP) RETURN collect(p)""",Out-of-memory,yes,
+FalkorDB,4.14.10,"GRAPH.QUERY fuzz_graph ""UNWIND range(1, 1000) AS i CREATE (:Victim {id: i})""
+GRAPH.QUERY fuzz_graph ""MATCH (a:Victim), (b:Victim) CREATE (a)-[:AA {data: 'padding'}]->(b)""",Segmentation fault,yes,CVE-2026-30**9
+FalkorDB,4.14.10,"GRAPH.QUERY fuzz_gragh ""WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c})""",Out-of-memory,yes,CVE-2026-38**5
+FalkorDB,4.14.10,"GRAPH.QUERY fuzz_gragh ""CALL {UNWIND range(0, 2147483647) AS v1 CREATE (n:Bomb) DETACH DELETE n} RETURN count(*)""",Out-of-memory,yes,CVE-2026-38**8
+FalkorDB,4.16.1,"GRAPH.QUERY grammar_fuzz ""RETURN [x IN [1] | reduce(s=0, x IN [1] | s + [x IN [1] | x][0])][0]""",Segmentation fault,yes,
+FalkorDB,4.16.1,"GRAPH.QUERY fuzz_graph ""CREATE (a:Paper)-[:REL]->(a);""
+GRAPH.QUERY fuzz_graph ""CREATE (b:Paper);""
+GRAPH.QUERY fuzz_graph ""MATCH (n1:Paper) RETURN [(n1)-[r1:REL]->(n2:Paper) WHERE (n2 IS NOT NULL) | count(n1)] AS v1;""",Assertion failure,yes,CVE-2026-38**7
+FalkorDB,4.16.3,"GRAPH.QUERY fuzz_graph ""CREATE (a)-[r:R]->(a) WITH r, a DETACH DELETE a RETURN startNode(r)""",Use-after-free,yes,CVE-2026-38**7
+Memgraph,3.10.1,"RETURN replace(""A"", """", ""B"");",Segmentation fault,yes,CVE-2026-30**8
+Memgraph,3.7.1,"CREATE (:TestNode {val: 1});
+MATCH (n) DETACH DELETE n RETURN n {.*};",Use-after-free,yes,CVE-2025-69**7
+Memgraph,3.7.0,"UNWIND [9, 2, 7, 8, 1] AS v1 WITH v1, 'floor' AS v2 WHERE ([(pc_a)--(pc_b) | pc_a] < toString(CASE WHEN NOT (true) THEN true ELSE CASE WHEN true THEN 63 ELSE 82 END END)) SET v2.active = false RETURN v1, v2 ORDER BY v2 DESC;",Segmentation fault,yes,CVE-2025-67**9
+Memgraph,3.7.1,"UNWIND range(1, 50) AS i CREATE (:VLP {id: i});
 MATCH (a:VLP), (b:VLP) WHERE a.id <> b.id CREATE (a)-[:NEXT]->(b);
-MATCH p=(:VLP)-[*1..10]->(:VLP) RETURN collect(p);"	Out-of-memory	yes	CVE-2026-38**9
-Memgraph	3.7.1	WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix;	Out-of-memory	yes	CVE-2026-38**0
-Memgraph	3.7.1	WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c});	Out-of-memory	yes	CVE-2026-38**1
-Memgraph	3.7.1	CALL { UNWIND range(0, 2147483647) AS v1 CREATE (n:Paper) DETACH DELETE n } RETURN count(*);	Out-of-memory	yes	CVE-2026-38**2
-Memgraph	3.7.1	"CREATE (p:L_See_2 {id: 1}) CREATE (z:Node {p_traditional_1: 'public', p_business_2: 10}) CREATE (p)-[:REL]->(z);
-MATCH (p:L_See_2) WITH p, reduce(r=7236, v IN [(p)--(z) WHERE z.p_traditional_1 CONTAINS 'public' | z.p_business_2] | r + v) AS res WHERE res < 7782 RETURN p;"	Segmentation fault	yes	CVE-2026-38**3
-Memgraph	3.7.1	UNWIND range(1, 1000000000) AS x RETURN collect(x);	Out-of-memory	yes
-kuzuDB	0.11.3	RETURN ((((( ... 1 ... ))))) 	Stack overflow	yes	CVE-2025-69**3
-kuzuDB	0.11.3	UNWIND range(1, 1000000000) AS x RETURN sum(x)	Out-of-memory	yes	CVE-2025-69**4
-NebulaGraph	3.8.0	"CREATE SPACE IF NOT EXISTS test(partition_num=1, replica_factor=1, vid_type=INT64);
+MATCH p=(:VLP)-[*1..10]->(:VLP) RETURN collect(p);",Out-of-memory,yes,CVE-2026-38**9
+Memgraph,3.7.1,"WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix;",Out-of-memory,yes,CVE-2026-38**0
+Memgraph,3.7.1,"WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c});",Out-of-memory,yes,CVE-2026-38**1
+Memgraph,3.7.1,"CALL { UNWIND range(0, 2147483647) AS v1 CREATE (n:Paper) DETACH DELETE n } RETURN count(*);",Out-of-memory,yes,CVE-2026-38**2
+Memgraph,3.7.1,"CREATE (p:L_See_2 {id: 1}) CREATE (z:Node {p_traditional_1: 'public', p_business_2: 10}) CREATE (p)-[:REL]->(z);
+MATCH (p:L_See_2) WITH p, reduce(r=7236, v IN [(p)--(z) WHERE z.p_traditional_1 CONTAINS 'public' | z.p_business_2] | r + v) AS res WHERE res < 7782 RETURN p;",Segmentation fault,yes,CVE-2026-38**3
+Memgraph,3.7.1,"UNWIND range(1, 1000000000) AS x RETURN collect(x);",Out-of-memory,yes,
+kuzuDB,0.11.3,RETURN ((((( ... 1 ... ))))) ,Stack overflow,yes,CVE-2025-69**3
+kuzuDB,0.11.3,"UNWIND range(1, 1000000000) AS x RETURN sum(x)",Out-of-memory,yes,CVE-2025-69**4
+NebulaGraph,3.8.0,"CREATE SPACE IF NOT EXISTS test(partition_num=1, replica_factor=1, vid_type=INT64);
 USE test;
 CREATE TAG VLP(id int);
 CREATE EDGE NEXT();
 INSERT VERTEX VLP(id) VALUES 10:(10), 11:(11), 12:(12), 13:(13), 14:(14), 15:(15);
 INSERT EDGE NEXT() VALUES 10->11:(), 10->12:(), 10->13:(), 10->14:(), 10->15:(),11->10:(), 11->12:(), 11->13:(), 11->14:(), 11->15:(),12->10:(), 12->11:(), 12->13:(), 12->14:(), 12->15:(),13->10:(), 13->11:(), 13->12:(), 13->14:(), 13->15:(),14->10:(), 14->11:(), 14->12:(), 14->13:(), 14->15:(),15->10:(), 15->11:(), 15->12:(), 15->13:(), 15->14:();
-MATCH p=(a:VLP)-[:NEXT*1..18]->(b:VLP) WHERE id(a) == 10 RETURN count(p);"	Out-of-memory	yes	CVE-2025-69**5
-NebulaGraph	3.8.0	RETURN range(1, 9223372036854775807);	Out-of-memory	yes	CVE-2025-69**6
-RedisGraph	2.12.10	GRAPH.QUERY fuzz_graph "CREATE (a)-[r:R]->(a) WITH r, a DETACH DELETE a RETURN startNode(r)"	Use-after-free	yes
-RedisGraph	2.12.10	"GRAPH.QUERY fuzz_graph "CREATE (:Paper)-[:REL]->(:Paper)"
-GRAPH.QUERY fuzz_graph "MATCH p = allShortestPaths((a:Paper)-[*..2]-(b:Paper)) WITH *, count(a) AS count_a RETURN p""	Segmentation fault	yes
-RedisGraph	2.12.10	GRAPH.QUERY fuzz_graph "WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix"	Out-of-memory	yes
-RedisGraph	2.12.10	GRAPH.QUERY grammar_fuzz "RETURN [x IN [1] | reduce(s=0, x IN [1] | s + [x IN [1] | x][0])][0]"	Segmentation fault	yes
-RedisGraph	2.12.10	GRAPH.QUERY fuzz_gragh "WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c})"	Out-of-memory	yes
-RedisGraph	2.12.10	GRAPH.QUERY fuzz_gragh "CALL {UNWIND range(0, 2147483647) AS v1 CREATE (n:Bomb) DETACH DELETE n} RETURN count(*)"	Out-of-memory	yes
-Neo4j	5.26.27	"MATCH (n) DETACH DELETE n;
+MATCH p=(a:VLP)-[:NEXT*1..18]->(b:VLP) WHERE id(a) == 10 RETURN count(p);",Out-of-memory,yes,CVE-2025-69**5
+NebulaGraph,3.8.0,"RETURN range(1, 9223372036854775807);",Out-of-memory,yes,CVE-2025-69**6
+RedisGraph,2.12.10,"GRAPH.QUERY fuzz_graph ""CREATE (a)-[r:R]->(a) WITH r, a DETACH DELETE a RETURN startNode(r)""",Use-after-free,yes,
+RedisGraph,2.12.10,"GRAPH.QUERY fuzz_graph ""CREATE (:Paper)-[:REL]->(:Paper)""
+GRAPH.QUERY fuzz_graph ""MATCH p = allShortestPaths((a:Paper)-[*..2]-(b:Paper)) WITH *, count(a) AS count_a RETURN p""",Segmentation fault,yes,
+RedisGraph,2.12.10,"GRAPH.QUERY fuzz_graph ""WITH range(1, 100000) AS axis RETURN [x IN axis | [y IN axis | 1]] AS Matrix""",Out-of-memory,yes,
+RedisGraph,2.12.10,"GRAPH.QUERY grammar_fuzz ""RETURN [x IN [1] | reduce(s=0, x IN [1] | s + [x IN [1] | x][0])][0]""",Segmentation fault,yes,
+RedisGraph,2.12.10,"GRAPH.QUERY fuzz_gragh ""WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c})""",Out-of-memory,yes,
+RedisGraph,2.12.10,"GRAPH.QUERY fuzz_gragh ""CALL {UNWIND range(0, 2147483647) AS v1 CREATE (n:Bomb) DETACH DELETE n} RETURN count(*)""",Out-of-memory,yes,
+Neo4j,5.26.27,"MATCH (n) DETACH DELETE n;
 CREATE (n:Paper {published: true});
-MATCH (n1:Paper) WITH n1, duration({ hours: n1.published }) AS v1 RETURN n1;"	Undefined Behavior	yes
-Neo4j	5.26.27	"MATCH (n) DETACH DELETE n;
+MATCH (n1:Paper) WITH n1, duration({ hours: n1.published }) AS v1 RETURN n1;",Undefined Behavior,yes,
+Neo4j,5.26.27,"MATCH (n) DETACH DELETE n;
 UNWIND range(1, 300) AS i CREATE (:Node {id: i});
 WITH 1 AS dummy MATCH (n1:Node), (n2:Node) CREATE (n1)-[:REL]->(n2);
-MATCH (n1:Node)-[:REL]->(n2:Node)<-[:REL]-(n3:Node) RETURN collect(n2) LIMIT 1000;"	Out-of-memory	yes
+MATCH (n1:Node)-[:REL]->(n2:Node)<-[:REL]-(n3:Node) RETURN collect(n2) LIMIT 1000;",Out-of-memory,yes,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
+,,,,,
