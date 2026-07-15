@@ -49,9 +49,9 @@ RedisGraph,2.12.10,,"GRAPH.QUERY fuzz_graph ""WITH range(1, 100000) AS axis RETU
 RedisGraph,2.12.10,,"GRAPH.QUERY grammar_fuzz ""RETURN [x IN [1] | reduce(s=0, x IN [1] | s + [x IN [1] | x][0])][0]""",Segmentation fault,yes
 RedisGraph,2.12.10,,"GRAPH.QUERY fuzz_gragh ""WITH range(1, 1000) AS list UNWIND list AS a UNWIND list AS b UNWIND list AS c CREATE (:CartesianNode {id: a + b + c})""",Out-of-memory,yes
 RedisGraph,2.12.10,,"GRAPH.QUERY fuzz_gragh ""CALL {UNWIND range(0, 2147483647) AS v1 CREATE (n:Bomb) DETACH DELETE n} RETURN count(*)""",Out-of-memory,yes
-Neo4j,5.26.27,,"MATCH (n) DETACH DELETE n;
-CREATE (n:Paper {published: true});
-MATCH (n1:Paper) WITH n1, duration({ hours: n1.published }) AS v1 RETURN n1;",Undefined Behavior,yes
+Neo4j,5.26.27,,"UNWIND range(1, 50) AS i CREATE (:VLP {id: i});
+MATCH (a:VLP), (b:VLP) WHERE a.id <> b.id CREATE (a)-[:NEXT]->(b);
+MATCH p=(:VLP)-[*1..10]->(:VLP) RETURN collect(p);",Out-of-memory,yes
 Neo4j,5.26.27,,"MATCH (n) DETACH DELETE n;
 UNWIND range(1, 300) AS i CREATE (:Node {id: i});
 WITH 1 AS dummy MATCH (n1:Node), (n2:Node) CREATE (n1)-[:REL]->(n2);
