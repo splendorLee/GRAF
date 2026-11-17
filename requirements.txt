@@ -1,0 +1,9 @@
+# Parser runtime must exactly match the bundled ANTLR 4.13.2 generated sources.
+antlr4-python3-runtime==4.13.2
+
+# Target adapters. Only the adapter selected by --target is imported at runtime.
+neo4j>=5.20,<7
+redis>=5,<8
+falkordb>=1.0,<2
+kuzu>=0.8,<1
+nebula3-python>=3.8,<4

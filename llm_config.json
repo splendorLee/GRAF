@@ -1,0 +1,12 @@
+{
+  "base_url": "https://your-provider.example/v1",
+  "api_mode": "chat_completions",
+  "chat_completions_path": "/chat/completions",
+  "api_key": "YOUR_API_KEY",
+  "model": "YOUR_MODEL",
+  "temperature": 1.0,
+  "max_output_tokens": 32768,
+  "timeout_seconds": 600,
+  "max_requests": 1000,
+  "max_stagnant_calls": 8
+}
