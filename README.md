@@ -1,4 +1,4 @@
-# GRAF: target-specific skeleton admission and fuzzing
+# GRAF: Graph-Aware Fuzzing for Graph Database Management Systems
 
 Run all commands from this directory (the one containing `GRAF.py`). Use a
 dedicated test database: admission with `--initialize-graph`, the default
