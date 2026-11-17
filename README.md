@@ -74,12 +74,10 @@ and its host, port, space and credentials through the corresponding options.
 
 ## 3. Generate 5,000 raw skeleton lines per target
 
-Copy `llm_config.example.json` to `llm_config.json` and set `base_url`,
-`api_key`, `model`, and inference settings. Do not commit the private config.
+Set `base_url`, `api_key`, `model`, and inference settings. Do not commit the private config.
 Each target gets its own resumable work directory:
 
 ```bash
-cp llm_config.json llm_config.json
 python generate_cypher_skeletons.py --config llm_config.json \
   --gdbms NebulaGraph --work-dir generation_runs/NebulaGraph
 ```
