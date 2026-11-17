@@ -74,10 +74,12 @@ and its host, port, space and credentials through the corresponding options.
 
 ## 3. Generate 5,000 raw skeleton lines per target
 
-Set `base_url`, `api_key`, `model`, and inference settings. Do not commit the private config.
+Copy `llm_config.example.json` to `llm_config.json` and set `base_url`,
+`api_key`, `model`, and inference settings. Do not commit the private config.
 Each target gets its own resumable work directory:
 
 ```bash
+cp llm_config.example.json llm_config.json
 python generate_cypher_skeletons.py --config llm_config.json \
   --gdbms NebulaGraph --work-dir generation_runs/NebulaGraph
 ```
@@ -151,70 +153,79 @@ rejections. Accepted skeletons appear in
 the old certified pool is not replaced. The old `skeleton_pool.strict.*`
 and `--mode strict` commands do not apply to this implementation.
 
-## 5. Run a short test, then fuzz continuously
+## 5. Run each target for 12 hours
 
 GRAF verifies the admission manifest and source/pool hashes **before** any
 managed reset. `--seed` must select the same initial graph profile used during
-admission; use the same value below. A smoke run of 20 rounds is useful before
-setting `--max-iterations 0` for continuous operation.
+admission; use the same value below. The `graf_timeout_clean.py` wrapper
+limits the complete test to 12 hours. `--max-iterations 0` leaves the number
+of rounds unrestricted until the time limit is reached. Each command sets a
+90-second limit for one query; the separate target compilation limit remains
+15 seconds by default.
 
 ### NebulaGraph
 
 ```bash
-python GRAF.py --target nebula --target-build-id "$NEBULA_BUILD_ID" \
+python graf_timeout_clean.py --duration 12h -- \
+  python GRAF.py --target nebula --target-build-id "$NEBULA_BUILD_ID" \
   --nebula-host 127.0.0.1 --nebula-port 9669 \
   --nebula-user root --nebula-password "$GRAF_NEBULA_PASSWORD" \
   --nebula-space graf_fuzz --nebula-container nebula-docker-compose-graphd-1 \
-  --seed "$GRAF_SEED" --max-iterations 20
+  --seed "$GRAF_SEED" --query-timeout 90 --max-iterations 0
 ```
 
 ### Memgraph
 
 ```bash
-python GRAF.py --target memgraph --target-build-id "$MEMGRAPH_BUILD_ID" \
+python graf_timeout_clean.py --duration 12h -- \
+  python GRAF.py --target memgraph --target-build-id "$MEMGRAPH_BUILD_ID" \
   --memgraph-uri bolt://127.0.0.1:7687 \
   --memgraph-container memgraph_fuzz_target \
-  --seed "$GRAF_SEED" --max-iterations 20
+  --seed "$GRAF_SEED" --query-timeout 90 --max-iterations 0
 ```
 
 ### Neo4j
 
 ```bash
-python GRAF.py --target neo4j --target-build-id "$NEO4J_BUILD_ID" \
+python graf_timeout_clean.py --duration 12h -- \
+  python GRAF.py --target neo4j --target-build-id "$NEO4J_BUILD_ID" \
   --neo4j-uri bolt://127.0.0.1:7688 --neo4j-user neo4j \
   --neo4j-password "$NEO4J_PASSWORD" --neo4j-database neo4j \
   --neo4j-container neo4j_fuzz_target \
-  --seed "$GRAF_SEED" --max-iterations 20
+  --seed "$GRAF_SEED" --query-timeout 90 --max-iterations 0
 ```
 
 ### FalkorDB
 
 ```bash
-python GRAF.py --target falkordb --target-build-id "$FALKORDB_BUILD_ID" \
+python graf_timeout_clean.py --duration 12h -- \
+  python GRAF.py --target falkordb --target-build-id "$FALKORDB_BUILD_ID" \
   --falkordb-host 127.0.0.1 --falkordb-port 6380 \
   --falkordb-graph graf_fuzz --falkordb-container falkordb_fuzz_target \
-  --seed "$GRAF_SEED" --max-iterations 20
+  --seed "$GRAF_SEED" --query-timeout 90 --max-iterations 0
 ```
 
 ### KuzuDB
 
 ```bash
-python GRAF.py --target kuzu --target-build-id "$KUZU_BUILD_ID" \
+python graf_timeout_clean.py --duration 12h -- \
+  python GRAF.py --target kuzu --target-build-id "$KUZU_BUILD_ID" \
   --kuzu-db-path ./kuzu_fuzz_test \
-  --seed "$GRAF_SEED" --max-iterations 20
+  --seed "$GRAF_SEED" --query-timeout 90 --max-iterations 0
 ```
 
 By default, GRAF manages and rotates a seed graph after 500 **executed**
 queries (`--reseed-interval 500`) and refreshes its graph context every 500
 rounds (`--context-refresh-interval 500`). `--reseed-interval 0` disables
 rotation. `--init-mode reuse` preserves an externally managed graph and
-automatically disables managed rotation. The query timeout defaults to 120 s;
-override with `--query-timeout 60` if desired. The default
+automatically disables managed rotation. The query timeout defaults to 120 s
+when not specified; the commands above override it to 90 s. The default
 `--target-compile-check required` checks each concrete parent and mutation
 before execution. A NebulaGraph query accepted by its native compiler but
 not parsed by the bundled Cypher grammar is tested as an unchanged parent;
 AST mutation requires a locally parsed query. Compile success does not
-guarantee runtime success.
+guarantee runtime success. A completed time-limited run returns exit status
+124 from the wrapper; this is not itself a target crash.
 
 ## 6. Inspect outputs
 
